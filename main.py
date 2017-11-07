@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 
+import os.path
 import gc
 
 
@@ -54,7 +55,6 @@ def main():
         'registration_init_time': 'category',
         'expiration_date': 'category'
     })
-    # sample_submission_df = pd.read_csv('data/sample_submission.csv')
 
     print('>> Merge needed information...')
     song_extra_info_df['song_year'] = song_extra_info_df['isrc'].apply(transform_isrc_to_year)
@@ -71,7 +71,7 @@ def main():
     del members_df, song_extra_info_df
     gc.collect()
 
-    for column in train_df.columns:
+    for column in test_df.columns:
         if train_df[column].dtype == object:
             train_df[column] = train_df[column].astype('category')
             test_df[column] = test_df[column].astype('category')
@@ -110,6 +110,7 @@ def main():
     print(submission_df)
 
     print('>> Done!')
+
 
 if __name__ == '__main__':
     main()

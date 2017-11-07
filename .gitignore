@@ -99,5 +99,5 @@ ENV/
 
 # mypy
 .mypy_cache/
-data/
 .idea/
+*.csv
