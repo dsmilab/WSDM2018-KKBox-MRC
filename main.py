@@ -5,6 +5,8 @@ import lightgbm as lgb
 import os.path
 import gc
 
+MODEL_FILE_NAME = 'model.txt'
+
 
 def transform_isrc_to_year(isrc):
     if type(isrc) != str:
@@ -71,7 +73,7 @@ def main():
     del members_df, song_extra_info_df
     gc.collect()
 
-    for column in test_df.columns:
+    for column in train_df.columns:
         if train_df[column].dtype == object:
             train_df[column] = train_df[column].astype('category')
             test_df[column] = test_df[column].astype('category')
@@ -82,26 +84,31 @@ def main():
     x_test = test_df.drop(['id'], axis=1)
     test_ids = test_df['id'].values
 
-    print('>> Create model...')
+    if not os.path.exists('model.txt'):
+        print('>> >> model configure not found!')
+        print('>> Create model...')
 
-    # First, no CV
-    train_set = lgb.Dataset(x, y)
-    valid_set = [train_set]
+        # First, no CV
+        train_set = lgb.Dataset(x, y)
+        valid_set = [train_set]
 
-    params = dict({
-        'learning_rate': 0.1,
-        'application': 'binary',
-        'max_depth': 8,
-        'num_leaves': 2 ** 8,
-        'verbosity': 0,
-        'metric': 'auc',
-        # 'device': 'gpu'
-    })
+        params = dict({
+            'learning_rate': 0.1,
+            'application': 'binary',
+            'max_depth': 8,
+            'num_leaves': 2 ** 8,
+            'verbosity': 0,
+            'metric': 'auc'
+        })
 
-    model = lgb.train(params, train_set=train_set, valid_sets=valid_set, num_boost_round=20)
+        model = lgb.train(params, train_set=train_set, valid_sets=valid_set, num_boost_round=100)
+        model.save_model(MODEL_FILE_NAME)
+        print('>> >> Done!')
+
+    print('>> Load model configure...')
+    model = lgb.Booster(model_file=MODEL_FILE_NAME)
 
     print('>> Predicting...')
-
     y_test = model.predict(x_test)
     submission_df = pd.DataFrame()
     submission_df['id'] = test_ids
