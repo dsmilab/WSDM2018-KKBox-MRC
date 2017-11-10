@@ -24,7 +24,7 @@ def main():
     songs_df = pd.read_csv('data/songs.csv')
     song_extra_info_df = pd.read_csv('data/song_extra_info.csv')
     members_df = pd.read_csv('data/members.csv')
-
+    members_df.ren
     print('>> Merge needed information...')
     song_extra_info_df['song_year'] = song_extra_info_df['isrc'].apply(transform_isrc_to_year)
     song_extra_info_df.drop(['name', 'isrc'], axis=1, inplace=True)
@@ -65,8 +65,8 @@ def main():
             'learning_rate': 0.1,
             'application': 'binary',
             'min_data_in_leaf': 4,
-            'max_depth': 6,
-            'num_leaves': 2 ** 6,
+            'max_depth': 8,
+            'num_leaves': 2 ** 8,
             'verbosity': 0,
             'metric': 'auc'
         })
