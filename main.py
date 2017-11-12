@@ -24,7 +24,6 @@ def main():
     songs_df = pd.read_csv('data/songs.csv')
     song_extra_info_df = pd.read_csv('data/song_extra_info.csv')
     members_df = pd.read_csv('data/members.csv')
-    members_df.ren
     print('>> Merge needed information...')
     song_extra_info_df['song_year'] = song_extra_info_df['isrc'].apply(transform_isrc_to_year)
     song_extra_info_df.drop(['name', 'isrc'], axis=1, inplace=True)
