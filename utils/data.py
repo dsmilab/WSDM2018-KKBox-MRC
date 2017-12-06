@@ -72,8 +72,7 @@ class FeatureProcesser(object):
         train, test = self._load_raw()
         self._process_member()
         self._process_extra()
-
-        self._compute_msno_song_similarity(train, test)
+        self._process_songs()
 
         train = self._preprocess(train)
         test = self._preprocess(test)
@@ -93,8 +92,17 @@ class FeatureProcesser(object):
         train['count_song_played'] = train['song_id'].apply(self._count_song_played).astype(np.int64)
         test['count_song_played'] = test['song_id'].apply(self._count_song_played).astype(np.int64)
 
-        train = self._add_new_feature(train)
-        test = self._add_new_feature(test)
+        train = self._add_new_feature(train, True)
+        test = self._add_new_feature(test, False)
+
+        track_count_df = train[['song_id',
+                               'artist_name']].drop_duplicates('song_id')
+        track_count_df = track_count_df.groupby('artist_name').agg('count').reset_index()
+        track_count_df.columns = ['artist_name', 'track_count']
+        track_count_df = track_count_df.sort_values('track_count', ascending=False)
+
+        train = self._add_comb_feature(train, test, track_count_df, is_train=True)
+        test = self._add_comb_feature(train, test, track_count_df, is_train=False)
 
         # total_genre_ids = pd.concat([train.genre_ids, test.genre_ids])
         # self.genres = np.unique('|'.join(total_genre_ids).split('|'))
@@ -113,15 +121,10 @@ class FeatureProcesser(object):
         self.train = train
         self.test = test
 
+        self._compute_msno_song_similarity(train, test)
+
     def load(self):
         return self.train, self.test, self.unknown_msno_map, self.unknown_song_map
-
-    def _transform_isrc_to_year(self, isrc):
-        if type(isrc) != str:
-            return np.nan
-        # this year 2017
-        suffix = int(isrc[5:7])
-        return 1900 + suffix if suffix > 17 else 2000 + suffix
 
     def _load_raw(self):
         start = time.time()
@@ -148,12 +151,357 @@ class FeatureProcesser(object):
         df = df.merge(self.members, on='msno', how='left')
         df = df.merge(self.extra, on = 'song_id', how = 'left')
 
+        # howeverforever
+        df['source_system_tab'].fillna('others', inplace=True)
+        df['source_screen_name'].fillna('others', inplace=True)
+        df['source_type'].fillna('nan', inplace=True)
+
+        # df.song_length.fillna(200000,inplace=True).astype(np.uint32)
         df.song_length.fillna(200000,inplace=True)
-        df.song_length = df.song_length.astype(np.uint32)
         # df.song_id = df.song_id.astype('category')
         logging.debug("preprocess in %0.2fs" % (time.time() - start))
 
         return df
+
+    def _add_genre_feature(self, df):
+
+        start = time.time()
+        genre_ids = df.genre_ids.apply(lambda x: x.split('|'))
+        for g in self.genres:
+            df['g_' + g] = genre_ids.apply(lambda x: self._find_genre(x, g))
+
+        logging.debug("add genre features in %0.2fs" % (time.time() - start))
+
+        return df
+
+    def _add_comb_feature(self, train, test, track_count_df, is_train=True):
+
+        start = time.time()
+        if is_train:
+            count_df = train['song_id'].value_counts().reset_index()
+            artist_count_df = train[['artist_name',
+                                'target']].groupby('artist_name').agg(
+                                    ['mean', 'count']).reset_index()
+            df = train
+        else:
+            comb_df = train.append(test)
+            count_df = comb_df['song_id'].value_counts().reset_index()
+            artist_count_df = comb_df[['artist_name',
+                                'target']].groupby('artist_name').agg(
+                                    ['mean', 'count']).reset_index()
+
+            df = test
+
+        count_df.columns = ['song_id', 'play_count']
+
+        df = df.merge(count_df, on='song_id', how='left')
+        df['play_count'].fillna(0, inplace=True)
+
+        artist_count_df.columns = ['artist_name', 'replay_pb', 'play_count']
+
+        artist_count_df = artist_count_df.merge(
+            track_count_df, on='artist_name', how='left')
+        artist_count_df['track_count'].fillna(0, inplace=True)
+
+        df = df.merge(
+            artist_count_df[['artist_name', 'track_count']],
+            on='artist_name',
+            how='left')
+
+        logging.debug("add comb features in %0.2fs" % (time.time() - start))
+        return df
+
+    def _add_new_feature(self, df, is_train=True):
+
+        start = time.time()
+
+        # howeverforever
+        df['source_merged'] = df['source_system_tab'].map(str) + ' | ' + df['source_screen_name'].map(str) + ' | ' + df['source_type'].map(str)
+
+        if is_train:
+            self.count_df = df[['source_merged', 'target']].groupby('source_merged').agg(['mean', 'count'])
+            self.count_df.reset_index(inplace=True)
+            self.count_df.columns = ['source_merged', 'source_replay_pb', 'source_replay_count']
+
+        df = df.merge(self.count_df, on='source_merged', how='left')
+
+        df['1h_source'] = df['source_replay_pb'].apply(self._one_hot_encode_source)
+        df.drop(['source_merged', 'source_replay_pb', 'source_replay_count'], axis=1, inplace=True)
+
+        df['1h_system_tab'] = df['source_system_tab'].apply(self._one_hot_encode_system_tab)
+        df['1h_screen_name'] = df['source_screen_name'].apply(self._one_hot_encode_screen_name)
+        df['1h_source_type'] = df['source_type'].apply(self._one_hot_encode_source_type)
+
+        # df['genre_ids'].fillna('no_genre_id',inplace=True)
+        # df['genre_ids_count'] = df['genre_ids'].apply(self._genre_id_count).astype(np.int8)
+
+        # df['lyricist'].fillna('no_lyricist',inplace=True)
+        # df['lyricists_count'] = df['lyricist'].apply(self._lyricist_count).astype(np.int8)
+
+        # df['composer'].fillna('no_composer',inplace=True)
+        # df['composer_count'] = df['composer'].apply(self._composer_count).astype(np.int8)
+
+        # df['artist_name'].fillna('no_artist',inplace=True)
+        # df['is_featured'] = df['artist_name'].apply(self._is_featured).astype(np.int8)
+
+        # df['artist_count'] = df['artist_name'].apply(self._artist_count).astype(np.int8)
+
+        # if artist is same as composer
+        # df['artist_composer'] = (df['artist_name'] == df['composer']).astype(np.int8)
+        #
+        # # if artist, lyricist and composer are all three same
+        # df['artist_composer_lyricist'] = ((df['artist_name'] == df['composer']) & (df['artist_name'] == df['lyricist']) & (df['composer'] == df['lyricist'])).astype(np.int8)
+        #
+        # df['song_lang_boolean'] = df['language'].apply(self._song_lang_boolean).astype(np.int8)
+        df['smaller_song'] = df['song_length'].apply(self._smaller_song).astype(np.int8)
+
+        df['is_2017'] = df['song_year'].apply(self._is_2017).astype(np.int8)
+
+        logging.debug("add new features in %0.2fs" % (time.time() - start))
+
+        return df
+
+    def _process_songs(self):
+        self.songs['artist_name'].fillna('no_artist',inplace=True)
+        self.songs['is_featured'] = self.songs['artist_name'].apply(self._is_featured).astype(np.int8)
+
+        self.songs['artist_count'] = self.songs['artist_name'].apply(self._artist_count).astype(np.int8)
+        self.songs['artist_composer'] = (self.songs['artist_name'] == self.songs['composer']).astype(np.int8)
+
+        # if artist, lyricist and composer are all three same
+        self.songs['artist_composer_lyricist'] = ((self.songs['artist_name'] == self.songs['composer']) & (self.songs['artist_name'] == self.songs['lyricist']) & (self.songs['composer'] == self.songs['lyricist'])).astype(np.int8)
+
+        self.songs['song_lang_boolean'] = self.songs['language'].apply(self._song_lang_boolean).astype(np.int8)
+
+        # self.songs['is_2017'] = self.songs['song_year'].apply(self._is_2017).astype(np.int8)
+
+        # howeverforever
+        self.songs['genre_count'] = self.songs['genre_ids'].apply(self._parse_splitted_category_to_number)
+        self.songs['composer_count'] = self.songs['composer'].apply(self._parse_splitted_category_to_number)
+        self.songs['lyricist_count'] = self.songs['lyricist'].apply(self._parse_splitted_category_to_number)
+
+        self.songs['1h_lang'] = self.songs['language'].apply(self._one_hot_encode_lang)
+
+        self.songs['1h_song_length'] = self.songs['song_length'].apply(lambda x: 1 if x <= 239738 else 0)
+
+        self.songs['language'].fillna('nan', inplace=True)
+        self.songs['composer'].fillna('nan', inplace=True)
+        self.songs['lyricist'].fillna('nan', inplace=True)
+        self.songs['genre_ids'].fillna('nan', inplace=True)
+        # self.songs.drop(['language'], axis=1, inplace=True)
+        assert(~self.songs.isnull().any().any())
+
+    def _process_member(self):
+
+        self.members['membership_days'] = self.members['expiration_date'].subtract(self.members['registration_init_time']).dt.days.astype(int)
+
+        self.members['registration_year'] = self.members['registration_init_time'].dt.year
+        self.members['registration_month'] = self.members['registration_init_time'].dt.month
+        self.members['registration_date'] = self.members['registration_init_time'].dt.day
+
+        self.members['expiration_year'] = self.members['expiration_date'].dt.year
+        self.members['expiration_month'] = self.members['expiration_date'].dt.month
+        self.members['expiration_date'] = self.members['expiration_date'].dt.day
+        self.members = self.members.drop(['registration_init_time'], axis=1)
+
+        # howeverforever
+        self.members['bd'] = self.members['bd'].apply(self._transform_bd_outliers)
+        self.members['gender'].fillna('nan', inplace=True)
+        self.members['1h_via'] = self.members['registered_via'].apply(self._one_hot_encode_via)
+        assert(~self.members.isnull().any().any())
+
+    def _process_extra(self):
+        self.extra['song_year'] = self.extra['isrc'].apply(self._transform_isrc_to_year)
+        self.extra.drop(['name', 'isrc'], axis=1, inplace=True)
+
+        # howeverforever
+        # self.extra['song_country'] = self.extra['isrc'].apply(self._transform_isrc_to_country)
+        # self.extra['song_registration'] = self.extra['isrc'].apply(self._transform_isrc_to_reg)
+        # self.extra['song_designation'] = self.extra['isrc'].apply(self._transfrom_isrc_to_desig)
+
+        self.extra['1h_song_year'] = self.extra['song_year'].apply(self._one_hot_encode_year)
+        # self.extra['1h_song_country'] = self.extra['song_country'].apply(self._one_hot_encode_country)
+
+        self.extra['song_year'].fillna(2017, inplace=True)
+        # self.extra['song_registration'].fillna('***', inplace=True)
+
+        assert(~self.extra.isnull().any().any())
+
+    def _compute_msno_song_similarity(self, train, test):
+
+        start = time.time()
+        member_feature = ['city',
+                        'bd',
+                        'gender',
+                        'registered_via',
+                        'expiration_date',
+                        'membership_days',
+                        'registration_year',
+                        'registration_month',
+                        'registration_date',
+                        'expiration_year',
+                        'expiration_month']
+
+        song_feature = ['genre_ids',
+                     # 'artist_name',
+                     'language',
+                     # 'composer',
+                     # 'lyricist',
+                     'song_year']
+
+        member_pipeline = Pipeline([
+                ('extract', ColumnSelector(member_feature)),
+                ('dicVect', DictVectorizer())])
+        song_pipeline = Pipeline([
+                ('extract', ColumnSelector(song_feature)),
+                ('dicVect', DictVectorizer())])
+
+        songs = self.songs.merge(self.extra, on = 'song_id', how = 'left').fillna('test')
+        members = self.members.fillna('test')
+        self.msno_x = {v: i for i, v in enumerate(members.msno)}
+        self.song_x = {v: i for i, v in enumerate(songs.song_id)}
+
+        self.msno_m = member_pipeline.fit_transform(members)
+        logging.debug("transform members in %0.2fs" % (time.time() - start))
+
+        start = time.time()
+        self.song_m = song_pipeline.fit_transform(songs)
+        logging.debug("transform songs in %0.2fs" % (time.time() - start))
+
+        start = time.time()
+        known_msno = set(train.msno.unique())
+        known_song = set(train.song_id.unique())
+
+        unknown_msno = list(set(test.msno.unique()) - known_msno)
+        total_msno = float(len(unknown_msno))
+        unknown_song = list(set(test.song_id.unique()) - known_song)
+        total_song = float(len(unknown_song))
+
+        self.unknown_msno_map, self.unknown_song_map = {}, {}
+
+        start = time.time()
+        known_msno_list = members.msno.apply(lambda x: x in known_msno)
+        known_song_list = songs.song_id.apply(lambda x: x in known_song)
+        logging.debug("establish known list in %0.2fs" % (time.time() - start))
+
+        # start = time.time()
+        # Parallel(n_jobs=6)(delayed(self._get_unknown_map)(i, members.msno, known_msno_list, True) for i in unknown_msno)
+        # logging.debug("process msno in %0.2fs" % (time.time() - start))
+        n = 0
+        for i in unknown_msno:
+            if i in self.msno_x:
+                df = self._get_rank(self.msno_m, self.msno_x[i], members.msno, known_msno_list)
+                self.unknown_msno_map[i] = df.iloc[0]['id']
+            # else:
+            #     self.unknown_msno_map[i] = 'new'
+            n += 1
+            if (n + 1) % 100 == 0: print('msno: %f %%' % ((n/total_msno) * 100))
+
+        # for i in unknown_song:
+            # self.unknown_song_map[i] = 'new'
+        # start = time.time()
+        # r = Parallel(n_jobs=-1, verbose=100)(delayed(self._get_unknown_map)(i) for i in unknown_song)
+        # logging.debug("difficult part in %0.2fs" % (time.time() - start))
+        # for k, v in zip(unknown_song, r):
+        #     self.unknown_song_map[k] = v
+        # n = 0
+        # for i in unknown_song:
+        #     if i in self.song_x:
+        #         df = self._get_rank(self.song_m, self.song_x[i], songs.song_id, known_song_list)
+        #         self.unknown_song_map[i] = df.iloc[0]['id']
+        # #     else:
+        # #         unknown_song_map[i] = 'new'
+        #     n += 1
+        #     if (n + 1) % 100 == 0: print('song: %f %%' % ((n/total_song) * 100))
+
+        logging.debug("transform all unknown data in %0.2fs" % (time.time() - start))
+
+    # def _get_unknown_map(self, i, map_list, known_list, msno=True):
+    # def _get_unknown_map(self, i):
+        # if msno:
+        #     if i in self.msno_x:
+        #         df = self._get_rank(self.msno_m, self.msno_x[i], map_list, known_list)
+        #         self.unknown_msno_map[i] = df.iloc[0]['id']
+        #     # else:
+        #     #     self.unknown_msno_map[i] = 'new'
+        # else:
+        # if i in self.song_x:
+        #     # df = self._get_rank(self.song_m, self.song_x[i], map_list, known_list)
+        #     df = self._get_rank(self.song_m, self.song_x[i], self.test_a, self.test_b)
+        #     return df.iloc[0]['id']
+            # else:
+            #     self.unknown_song_map[i] = 'new'
+
+    def _get_rank(self, model, w, id_list, known_list):
+        result = cosine_similarity(model, model[w].toarray().reshape(1, -1)).reshape(1, -1)[0]
+        r = pd.DataFrame({'id': id_list, 'similarity': result, 'known': known_list})
+        return r[r.known].sort_values(by='similarity', ascending=False).reset_index(drop=True)
+
+    def _transform_two_dates_to_days(self, row):
+        start = parse_str_to_date(row['registration_init_time'])
+        end = parse_str_to_date(row['expiration_date'])
+        delta = end - start
+        return delta.days
+
+    def _transform_outliers(self, x, mean, std):
+        return x if np.abs(x - mean) <= 3 * std else -1
+
+    def _transform_init_time_to_ym(self, time):
+        time_str = str(time)
+        year = int(time_str[:4])
+        month = int(time_str[4:6])
+        return int("%04d%02d" % (year, month))
+
+    def _transform_bd_outliers(self, bd):
+        # figure is from "exploration"
+        if bd >= 120 or bd <= 7:
+            return 'nan'
+        mean = 28.99737187910644
+        std = 9.538470787507382
+        return bd if abs(bd - mean) <= 3 * std else 'nan'
+
+    def _parse_splitted_category_to_number(self, x):
+        if x is np.nan:
+            return 0
+        x = str(x)
+        x.replace('/', '|')
+        x.replace(';', '|')
+        x.replace('\\', '|')
+        x.replace(' and ', '|')
+        x.replace('&', '|')
+        x.replace('+', '|')
+        return x.count('|') + 1
+
+    def _one_hot_encode_year(self, x):
+        return 1 if 2013 <= float(x) <= 2017 else 0
+
+    def _one_hot_encode_country(self, x):
+        return 1 if x == 'TW' or x == 'CN' or x == 'HK' else 0
+
+    def _one_hot_encode_via(self, x):
+        return 0 if x == 4 else 1
+
+    def _one_hot_encode_screen_name(self, x):
+        return 1 if x == 'Local playlist more' or x == 'My library' else 0
+
+    def _one_hot_encode_system_tab(self, x):
+        return 1 if x == 'my library' else 0
+
+    def _one_hot_encode_source_type(self, x):
+        return 1 if x == 'local-library' or x == 'local-playlist' else 0
+
+    def _one_hot_encode_source(self, x):
+        return 1 if x >= 0.6 else 0
+
+    def _one_hot_encode_lang(self, x):
+        return 1 if x in [-1, 17, 45] else 0
+
+    def _transform_isrc_to_year(self, isrc):
+        if type(isrc) != str:
+            return np.nan
+        # this year 2017
+        suffix = int(isrc[5:7])
+        return 1900 + suffix if suffix > 17 else 2000 + suffix
 
     def _genre_id_count(self, x):
         if x == 'no_genre_id':
@@ -222,176 +570,6 @@ class FeatureProcesser(object):
     def _find_genre(self, g_list, g):
         return True if g in g_list else False
 
-    def _add_genre_feature(self, df):
-
-        start = time.time()
-        genre_ids = df.genre_ids.apply(lambda x: x.split('|'))
-        for g in self.genres:
-            df['g_' + g] = genre_ids.apply(lambda x: self._find_genre(x, g))
-
-        logging.debug("add genre features in %0.2fs" % (time.time() - start))
-
-        return df
-
-    def _add_new_feature(self, df):
-
-        start = time.time()
-        df['genre_ids'].fillna('no_genre_id',inplace=True)
-        df['genre_ids_count'] = df['genre_ids'].apply(self._genre_id_count).astype(np.int8)
-
-        df['lyricist'].fillna('no_lyricist',inplace=True)
-        df['lyricists_count'] = df['lyricist'].apply(self._lyricist_count).astype(np.int8)
-
-        df['composer'].fillna('no_composer',inplace=True)
-        df['composer_count'] = df['composer'].apply(self._composer_count).astype(np.int8)
-
-        df['artist_name'].fillna('no_artist',inplace=True)
-        df['is_featured'] = df['artist_name'].apply(self._is_featured).astype(np.int8)
-
-        df['artist_count'] = df['artist_name'].apply(self._artist_count).astype(np.int8)
-
-        # if artist is same as composer
-        df['artist_composer'] = (df['artist_name'] == df['composer']).astype(np.int8)
-
-        # if artist, lyricist and composer are all three same
-        df['artist_composer_lyricist'] = ((df['artist_name'] == df['composer']) & (df['artist_name'] == df['lyricist']) & (df['composer'] == df['lyricist'])).astype(np.int8)
-
-        df['song_lang_boolean'] = df['language'].apply(self._song_lang_boolean).astype(np.int8)
-        df['smaller_song'] = df['song_length'].apply(self._smaller_song).astype(np.int8)
-
-        df['is_2017'] = df['song_year'].apply(self._is_2017).astype(np.int8)
-
-        logging.debug("add new features in %0.2fs" % (time.time() - start))
-
-        return df
-
-    def _process_member(self):
-
-        self.members['membership_days'] = self.members['expiration_date'].subtract(self.members['registration_init_time']).dt.days.astype(int)
-
-        self.members['registration_year'] = self.members['registration_init_time'].dt.year
-        self.members['registration_month'] = self.members['registration_init_time'].dt.month
-        self.members['registration_date'] = self.members['registration_init_time'].dt.day
-
-        self.members['expiration_year'] = self.members['expiration_date'].dt.year
-        self.members['expiration_month'] = self.members['expiration_date'].dt.month
-        self.members['expiration_date'] = self.members['expiration_date'].dt.day
-        self.members = self.members.drop(['registration_init_time'], axis=1)
-
-    def _process_extra(self):
-        self.extra['song_year'] = self.extra['isrc'].apply(self._transform_isrc_to_year)
-        self.extra.drop(['name', 'isrc'], axis=1, inplace=True)
-
-    def _compute_msno_song_similarity(self, train, test):
-
-        start = time.time()
-        member_feature = ['city',
-                        'bd',
-                        'gender',
-                        'registered_via',
-                        'expiration_date',
-                        'membership_days',
-                        'registration_year',
-                        'registration_month',
-                        'registration_date',
-                        'expiration_year',
-                        'expiration_month']
-
-        song_feature = ['genre_ids',
-                     'artist_name',
-                     'language',
-                     'composer',
-                     'lyricist',
-                     'song_year']
-
-        member_pipeline = Pipeline([
-                ('extract', ColumnSelector(member_feature)),
-                ('dicVect', DictVectorizer())])
-        song_pipeline = Pipeline([
-                ('extract', ColumnSelector(song_feature)),
-                ('dicVect', DictVectorizer())])
-
-        songs = self.songs.merge(self.extra, on = 'song_id', how = 'left').fillna('test')
-        members = self.members.fillna('test')
-        self.msno_x = {v: i for i, v in enumerate(members.msno)}
-        self.song_x = {v: i for i, v in enumerate(songs.song_id)}
-
-        self.msno_m = member_pipeline.fit_transform(members)
-        logging.debug("transform members in %0.2fs" % (time.time() - start))
-
-        start = time.time()
-        self.song_m = song_pipeline.fit_transform(songs)
-        logging.debug("transform songs in %0.2fs" % (time.time() - start))
-
-        start = time.time()
-        known_msno = set(train.msno.unique())
-        known_song = set(train.song_id.unique())
-
-        unknown_msno = list(set(test.msno.unique()) - known_msno)
-        total_msno = float(len(unknown_msno))
-        unknown_song = list(set(test.song_id.unique()) - known_song)
-        total_song = float(len(unknown_song))
-
-        self.unknown_msno_map, self.unknown_song_map = {}, {}
-
-        start = time.time()
-        known_msno_list = members.msno.apply(lambda x: x in known_msno)
-        known_song_list = songs.song_id.apply(lambda x: x in known_song)
-        logging.debug("establish known list in %0.2fs" % (time.time() - start))
-
-        # start = time.time()
-        # Parallel(n_jobs=6)(delayed(self._get_unknown_map)(i, members.msno, known_msno_list, True) for i in unknown_msno)
-        # logging.debug("process msno in %0.2fs" % (time.time() - start))
-        n = 0
-        for i in unknown_msno:
-            if i in self.msno_x:
-                df = self._get_rank(self.msno_m, self.msno_x[i], members.msno, known_msno_list)
-                self.unknown_msno_map[i] = df.iloc[0]['id']
-            # else:
-            #     self.unknown_msno_map[i] = 'new'
-            n += 1
-            if (n + 1) % 100 == 0: print('msno: %f %%' % ((n/total_msno) * 100))
-
-        # for i in unknown_song:
-        #     self.unknown_song_map[i] = 'new'
-        # start = time.time()
-        # r = Parallel(n_jobs=-1, verbose=100)(delayed(self._get_unknown_map)(i) for i in unknown_song)
-        # logging.debug("difficult part in %0.2fs" % (time.time() - start))
-        # for k, v in zip(unknown_song, r):
-        #     self.unknown_song_map[k] = v
-        # n = 0
-        # for i in unknown_song:
-        #     if i in song_ix:
-        #         df = self._get_rank(song_m, song_ix[i], songs.song_id, known_song_list)
-        #         unknown_song_map[i] = df.iloc[0]['id']
-        #     else:
-        #         unknown_song_map[i] = 'new'
-        #     n += 1
-        #     if (n + 1) % 100 == 0: print('song: %f %%' % ((n/total_song) * 100))
-
-        logging.debug("transform all unknown data in %0.2fs" % (time.time() - start))
-
-    # def _get_unknown_map(self, i, map_list, known_list, msno=True):
-    # def _get_unknown_map(self, i):
-        # if msno:
-        #     if i in self.msno_x:
-        #         df = self._get_rank(self.msno_m, self.msno_x[i], map_list, known_list)
-        #         self.unknown_msno_map[i] = df.iloc[0]['id']
-        #     # else:
-        #     #     self.unknown_msno_map[i] = 'new'
-        # else:
-        # if i in self.song_x:
-        #     # df = self._get_rank(self.song_m, self.song_x[i], map_list, known_list)
-        #     df = self._get_rank(self.song_m, self.song_x[i], self.test_a, self.test_b)
-        #     return df.iloc[0]['id']
-            # else:
-            #     self.unknown_song_map[i] = 'new'
-
-    def _get_rank(self, model, w, id_list, known_list):
-        result = cosine_similarity(model, model[w].toarray().reshape(1, -1)).reshape(1, -1)[0]
-        r = pd.DataFrame({'id': id_list, 'similarity': result, 'known': known_list})
-        return r[r.known].sort_values(by='similarity', ascending=False).reset_index(drop=True)
-
 class ImplicitProcesser(object):
 
     def __init__(self, feature_size=100, calculate_training_loss=False, save_dir='./model',
@@ -422,14 +600,14 @@ class ImplicitProcesser(object):
 
         self._fit_model(self.calculate_training_loss, self.iterations)
 
-        train_factors = self._get_factors(train=True)
-        test_factors = self._get_factors(train=False)
+        train_factors = self._get_factors(is_train=True)
+        test_factors = self._get_factors(is_train=False)
 
         if self.cluster:
 
             self._get_clusting_feature(self.n_clusters, self.random_state)
-            train_group = self._get_group(train=True)
-            test_group = self._get_group(train=False)
+            train_group = self._get_group(is_train=True)
+            test_group = self._get_group(is_train=False)
 
             train_add_feature = pd.concat([train_group, train_factors], axis=1, ignore_index=True)
             test_add_feature = pd.concat([test_group, test_factors], axis=1, ignore_index=True)
@@ -487,14 +665,14 @@ class ImplicitProcesser(object):
 
     def _get_ix(self, x, msno=True):
         if msno:
-            if x in self.msno_ix.keys():
+            if x in self.msno_ix:
                 return self.msno_ix[x]
             elif x in self.unknown_msno_map:
                 return self.msno_ix[self.unknown_msno_map[x]]
             else:
                 return 'new'
         else:
-            if x in self.song_ix.keys():
+            if x in self.song_ix:
                 return self.song_ix[x]
             elif x in self.unknown_song_map:
                 return self.song_ix[self.unknown_song_map[x]]
@@ -531,9 +709,9 @@ class ImplicitProcesser(object):
         result = cosine_similarity(model, model[w].reshape(1, -1)).reshape(1, -1)[0]
         return [(i, result[i]) for i in result.argsort()[::-1][:top_n + 1]]
 
-    def _get_factors(self, train=True):
+    def _get_factors(self, is_train=True):
 
-        if train:
+        if is_train:
             df = self.train_raw
             song_factor = np.array([self.item_factors[i] for i in df.song_ix])
             msno_factor = np.array([self.user_factors[i] for i in df.msno_ix])
@@ -545,10 +723,10 @@ class ImplicitProcesser(object):
 
         return pd.concat([pd.DataFrame(song_factor), pd.DataFrame(msno_factor)], axis=1, ignore_index=True)
 
-    def _get_group(self, train=True):
+    def _get_group(self, is_train=True):
 
         df = pd.DataFrame()
-        if train:
+        if is_train:
             df['song_group'] = self.train_raw.song_ix.apply(lambda x: self.item_group[x])
             df['msno_group'] = self.train_raw.msno_ix.apply(lambda x: self.user_group[x])
         else:
