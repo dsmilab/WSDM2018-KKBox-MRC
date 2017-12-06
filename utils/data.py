@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from implicit.als import AlternatingLeastSquares
+from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
 import pickle
@@ -113,7 +114,7 @@ class FeatureProcesser(object):
         self.test = test
 
     def load(self):
-        return self.train, self.test
+        return self.train, self.test, self.unknown_msno_map, self.unknown_song_map
 
     def _transform_isrc_to_year(self, isrc):
         if type(isrc) != str:
@@ -312,54 +313,84 @@ class FeatureProcesser(object):
 
         songs = self.songs.merge(self.extra, on = 'song_id', how = 'left').fillna('test')
         members = self.members.fillna('test')
-        msno_ix = {v: i for i, v in enumerate(members.msno)}
-        song_ix = {v: i for i, v in enumerate(songs.song_id)}
+        self.msno_x = {v: i for i, v in enumerate(members.msno)}
+        self.song_x = {v: i for i, v in enumerate(songs.song_id)}
 
-        msno_m = member_pipeline.fit_transform(members)
+        self.msno_m = member_pipeline.fit_transform(members)
         logging.debug("transform members in %0.2fs" % (time.time() - start))
 
         start = time.time()
-        song_m = song_pipeline.fit_transform(songs)
+        self.song_m = song_pipeline.fit_transform(songs)
         logging.debug("transform songs in %0.2fs" % (time.time() - start))
 
         start = time.time()
-        known_msno = list(train.msno.unique())
-        known_song = list(train.song_id.unique())
+        known_msno = set(train.msno.unique())
+        known_song = set(train.song_id.unique())
 
-        unknown_msno = list(set(test.msno.unique()) - set(known_msno))
+        unknown_msno = list(set(test.msno.unique()) - known_msno)
         total_msno = float(len(unknown_msno))
-        unknown_song = list(set(test.song_id.unique()) - set(known_song))
+        unknown_song = list(set(test.song_id.unique()) - known_song)
         total_song = float(len(unknown_song))
 
-        unknown_msno_map, unknown_song_map = {}, {}
-        print(total_msno)
+        self.unknown_msno_map, self.unknown_song_map = {}, {}
+
+        start = time.time()
+        known_msno_list = members.msno.apply(lambda x: x in known_msno)
+        known_song_list = songs.song_id.apply(lambda x: x in known_song)
+        logging.debug("establish known list in %0.2fs" % (time.time() - start))
+
+        # start = time.time()
+        # Parallel(n_jobs=6)(delayed(self._get_unknown_map)(i, members.msno, known_msno_list, True) for i in unknown_msno)
+        # logging.debug("process msno in %0.2fs" % (time.time() - start))
         n = 0
         for i in unknown_msno:
-            df = self._get_rank(msno_m, msno_ix[i], members.msno)
-            for index, row in df.iterrows():
-                if row['id'] in known_msno:
-                    unknown_msno_map[i] = row['id']
-                    break
+            if i in self.msno_x:
+                df = self._get_rank(self.msno_m, self.msno_x[i], members.msno, known_msno_list)
+                self.unknown_msno_map[i] = df.iloc[0]['id']
+            # else:
+            #     self.unknown_msno_map[i] = 'new'
             n += 1
-            if (n + 1) % 100000: print('msno: %f %%\n' % ((n/total_msno) * 100))
+            if (n + 1) % 100 == 0: print('msno: %f %%' % ((n/total_msno) * 100))
 
-        print(total_song)
-        n = 0
-        for i in unknown_song:
-            df = self._get_rank(song_m, song_ix[i], songs.song_id)
-            for index, row in df.iterrows():
-                if row['id'] in known_song:
-                    unknown_song_map[i] = row['id']
-                    break
-            n += 1
-            if (n + 1) % 1000: print('song: %f %%\n' % ((n/total_song) * 100))
+        # for i in unknown_song:
+        #     self.unknown_song_map[i] = 'new'
+        # start = time.time()
+        # r = Parallel(n_jobs=-1, verbose=100)(delayed(self._get_unknown_map)(i) for i in unknown_song)
+        # logging.debug("difficult part in %0.2fs" % (time.time() - start))
+        # for k, v in zip(unknown_song, r):
+        #     self.unknown_song_map[k] = v
+        # n = 0
+        # for i in unknown_song:
+        #     if i in song_ix:
+        #         df = self._get_rank(song_m, song_ix[i], songs.song_id, known_song_list)
+        #         unknown_song_map[i] = df.iloc[0]['id']
+        #     else:
+        #         unknown_song_map[i] = 'new'
+        #     n += 1
+        #     if (n + 1) % 100 == 0: print('song: %f %%' % ((n/total_song) * 100))
 
         logging.debug("transform all unknown data in %0.2fs" % (time.time() - start))
-        return unknown_msno_map, unknown_song_map
 
-    def _get_rank(self, model, w, id_list):
+    # def _get_unknown_map(self, i, map_list, known_list, msno=True):
+    # def _get_unknown_map(self, i):
+        # if msno:
+        #     if i in self.msno_x:
+        #         df = self._get_rank(self.msno_m, self.msno_x[i], map_list, known_list)
+        #         self.unknown_msno_map[i] = df.iloc[0]['id']
+        #     # else:
+        #     #     self.unknown_msno_map[i] = 'new'
+        # else:
+        # if i in self.song_x:
+        #     # df = self._get_rank(self.song_m, self.song_x[i], map_list, known_list)
+        #     df = self._get_rank(self.song_m, self.song_x[i], self.test_a, self.test_b)
+        #     return df.iloc[0]['id']
+            # else:
+            #     self.unknown_song_map[i] = 'new'
+
+    def _get_rank(self, model, w, id_list, known_list):
         result = cosine_similarity(model, model[w].toarray().reshape(1, -1)).reshape(1, -1)[0]
-        return pd.DataFrame({'id': id_list, 'similarity': result}).sort_values(by='similarity', ascending=False)
+        r = pd.DataFrame({'id': id_list, 'similarity': result, 'known': known_list})
+        return r[r.known].sort_values(by='similarity', ascending=False).reset_index(drop=True)
 
 class ImplicitProcesser(object):
 
@@ -454,15 +485,31 @@ class ImplicitProcesser(object):
 
         logging.debug("preprocess train data in %0.2fs" % (time.time() - start))
 
+    def _get_ix(self, x, msno=True):
+        if msno:
+            if x in self.msno_ix.keys():
+                return self.msno_ix[x]
+            elif x in self.unknown_msno_map:
+                return self.msno_ix[self.unknown_msno_map[x]]
+            else:
+                return 'new'
+        else:
+            if x in self.song_ix.keys():
+                return self.song_ix[x]
+            elif x in self.unknown_song_map:
+                return self.song_ix[self.unknown_song_map[x]]
+            else:
+                return 'new'
+
     def _process_test(self):
 
         start = time.time()
 
-        self.test_raw['msno_ix'] = self.test_raw.msno.apply(
-            lambda x: self.msno_ix[x] if x in self.msno_ix.keys() else self.msno_ix[self.unknown_msno_map[x]]).astype("category")
+        self.test_raw['msno_ix'] = self.test_raw.msno.apply(lambda x: self._get_ix(x, True))
+            # lambda x: self.msno_ix[x] if x in self.msno_ix.keys() else self.msno_ix[self.unknown_msno_map[x]]).astype("category")
 
-        self.test_raw['song_ix'] = self.test_raw.song_id.apply(
-            lambda x: self.song_ix[x] if x in self.song_ix.keys() else self.song_ix[self.unknown_song_map[x]]).astype("category")
+        self.test_raw['song_ix'] = self.test_raw.song_id.apply(lambda x: self._get_ix(x, False))
+            # lambda x: self.song_ix[x] if x in self.song_ix.keys() else self.song_ix[self.unknown_song_map[x]]).astype("category")
         logging.debug("preprocess test data in %0.2fs" % (time.time() - start))
 
     def _fit_model(self, calculate_training_loss, iterations):
