@@ -7,7 +7,7 @@ import os
 import json
 from utils.data import ImplicitProcessor, FeatureProcessor
 import lightgbm as lgb
-
+from multiprocessing import Pool
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -48,14 +48,16 @@ params = [{
 def main():
     logging.debug('>> Get features ...')
 
-    feature_processor = FeatureProcessor(root='../data')
-    cf_processor = ImplicitProcessor(feature_size=50,
-                                     iterations=30,
-                                     calculate_training_loss=True,
-                                     save_dir='./model',
-                                     random_state=50,
-                                     n_clusters=50,
-                                     cluster=True)
+    with Pool(processes=6) as pool:
+        result = pool.apply_async(FeatureProcessor, args=('../data', ))
+        feature_processor = result.get()
+        cf_processor = ImplicitProcessor(feature_size=50,
+                                         iterations=30,
+                                         calculate_training_loss=True,
+                                         save_dir='./model',
+                                         random_state=50,
+                                         n_clusters=50,
+                                         cluster=True)
 
     train, test, unknown_msno_map, unknown_song_map = feature_processor.load()
     # train.to_csv('train.csv', index=False)

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
-import multiprocessing as mp
 import pickle
 import time
 import os
@@ -76,9 +75,10 @@ class FeatureProcessor(object):
         assert os.path.exists(root), '%s not exists!' % root
         self.root = os.path.expanduser(root)
         train, test = self._load_raw()
-        self._process_member()
-        self._process_extra()
-        self._process_songs()
+
+        # self._process_member()
+        # self._process_extra()
+        # self._process_songs()
 
         train = self._preprocess(train)
         test = self._preprocess(test)
