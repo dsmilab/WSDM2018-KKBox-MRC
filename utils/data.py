@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-from implicit.als import AlternatingLeastSquares
-from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
+import multiprocessing as mp
 import pickle
 import time
 import os
 import logging
+
+from implicit.als import AlternatingLeastSquares
+from joblib import Parallel, delayed
 from scipy.sparse import coo_matrix, linalg
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
@@ -18,7 +20,9 @@ from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.metrics.pairwise import cosine_similarity
 
+
 class ColumnSelector(BaseEstimator, TransformerMixin):
+
     def __init__(self, columns):
         self.columns = columns
 
@@ -27,6 +31,7 @@ class ColumnSelector(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         return X[self.columns].to_dict(orient='record')
+
 
 class KKboxRSDataset(Dataset):
 
@@ -58,7 +63,8 @@ class KKboxRSDataset(Dataset):
 
         return vectors, target
 
-class FeatureProcesser(object):
+
+class FeatureProcessor(object):
     songs_file = 'songs.csv'
     extra_file = 'song_extra_info.csv'
     members_file = 'members.csv'
@@ -82,6 +88,7 @@ class FeatureProcesser(object):
         # number of times a song has been played before
         self._dict_count_song_played_train = {k: v for k, v in train['song_id'].value_counts().items()}
         self._dict_count_song_played_test = {k: v for k, v in test['song_id'].value_counts().items()}
+
         # number of times the artist has been played
         self._dict_count_artist_played_train = {k: v for k, v in train['artist_name'].value_counts().items()}
         self._dict_count_artist_played_test = {k: v for k, v in test['artist_name'].value_counts().items()}
@@ -95,8 +102,7 @@ class FeatureProcesser(object):
         train = self._add_new_feature(train, True)
         test = self._add_new_feature(test, False)
 
-        track_count_df = train[['song_id',
-                               'artist_name']].drop_duplicates('song_id')
+        track_count_df = train[['song_id', 'artist_name']].drop_duplicates('song_id')
         track_count_df = track_count_df.groupby('artist_name').agg('count').reset_index()
         track_count_df.columns = ['artist_name', 'track_count']
         track_count_df = track_count_df.sort_values('track_count', ascending=False)
@@ -149,16 +155,14 @@ class FeatureProcesser(object):
         start = time.time()
         df = df.merge(self.songs, on='song_id', how='left')
         df = df.merge(self.members, on='msno', how='left')
-        df = df.merge(self.extra, on = 'song_id', how = 'left')
+        df = df.merge(self.extra, on='song_id', how='left')
 
         # howeverforever
         df['source_system_tab'].fillna('others', inplace=True)
         df['source_screen_name'].fillna('others', inplace=True)
         df['source_type'].fillna('nan', inplace=True)
 
-        # df.song_length.fillna(200000,inplace=True).astype(np.uint32)
-        df.song_length.fillna(200000,inplace=True)
-        # df.song_id = df.song_id.astype('category')
+        df.song_length.fillna(200000, inplace=True)
         logging.debug("preprocess in %0.2fs" % (time.time() - start))
 
         return df
@@ -178,23 +182,21 @@ class FeatureProcesser(object):
 
         start = time.time()
         if is_train:
-            count_df = train['song_id'].value_counts().reset_index()
-            artist_count_df = train[['artist_name',
-                                'target']].groupby('artist_name').agg(
-                                    ['mean', 'count']).reset_index()
+            self.count_df = train['song_id'].value_counts().reset_index()
+            artist_count_df = train[['artist_name', 'target']].groupby('artist_name').agg(
+                ['mean', 'count']).reset_index()
             df = train
         else:
             comb_df = train.append(test)
-            count_df = comb_df['song_id'].value_counts().reset_index()
-            artist_count_df = comb_df[['artist_name',
-                                'target']].groupby('artist_name').agg(
-                                    ['mean', 'count']).reset_index()
+            self.count_df = comb_df['song_id'].value_counts().reset_index()
+            artist_count_df = comb_df[['artist_name', 'target']].groupby('artist_name').agg(
+                ['mean', 'count']).reset_index()
 
             df = test
 
-        count_df.columns = ['song_id', 'play_count']
+        self.count_df.columns = ['song_id', 'play_count']
 
-        df = df.merge(count_df, on='song_id', how='left')
+        df = df.merge(self.count_df, on='song_id', how='left')
         df['play_count'].fillna(0, inplace=True)
 
         artist_count_df.columns = ['artist_name', 'replay_pb', 'play_count']
@@ -232,27 +234,6 @@ class FeatureProcesser(object):
         df['1h_screen_name'] = df['source_screen_name'].apply(self._one_hot_encode_screen_name)
         df['1h_source_type'] = df['source_type'].apply(self._one_hot_encode_source_type)
 
-        # df['genre_ids'].fillna('no_genre_id',inplace=True)
-        # df['genre_ids_count'] = df['genre_ids'].apply(self._genre_id_count).astype(np.int8)
-
-        # df['lyricist'].fillna('no_lyricist',inplace=True)
-        # df['lyricists_count'] = df['lyricist'].apply(self._lyricist_count).astype(np.int8)
-
-        # df['composer'].fillna('no_composer',inplace=True)
-        # df['composer_count'] = df['composer'].apply(self._composer_count).astype(np.int8)
-
-        # df['artist_name'].fillna('no_artist',inplace=True)
-        # df['is_featured'] = df['artist_name'].apply(self._is_featured).astype(np.int8)
-
-        # df['artist_count'] = df['artist_name'].apply(self._artist_count).astype(np.int8)
-
-        # if artist is same as composer
-        # df['artist_composer'] = (df['artist_name'] == df['composer']).astype(np.int8)
-        #
-        # # if artist, lyricist and composer are all three same
-        # df['artist_composer_lyricist'] = ((df['artist_name'] == df['composer']) & (df['artist_name'] == df['lyricist']) & (df['composer'] == df['lyricist'])).astype(np.int8)
-        #
-        # df['song_lang_boolean'] = df['language'].apply(self._song_lang_boolean).astype(np.int8)
         df['smaller_song'] = df['song_length'].apply(self._smaller_song).astype(np.int8)
 
         df['is_2017'] = df['song_year'].apply(self._is_2017).astype(np.int8)
@@ -269,11 +250,11 @@ class FeatureProcesser(object):
         self.songs['artist_composer'] = (self.songs['artist_name'] == self.songs['composer']).astype(np.int8)
 
         # if artist, lyricist and composer are all three same
-        self.songs['artist_composer_lyricist'] = ((self.songs['artist_name'] == self.songs['composer']) & (self.songs['artist_name'] == self.songs['lyricist']) & (self.songs['composer'] == self.songs['lyricist'])).astype(np.int8)
+        self.songs['artist_composer_lyricist'] = ((self.songs['artist_name'] == self.songs['composer']) &
+                                                  (self.songs['artist_name'] == self.songs['lyricist']) &
+                                                  (self.songs['composer'] == self.songs['lyricist'])).astype(np.int8)
 
         self.songs['song_lang_boolean'] = self.songs['language'].apply(self._song_lang_boolean).astype(np.int8)
-
-        # self.songs['is_2017'] = self.songs['song_year'].apply(self._is_2017).astype(np.int8)
 
         # howeverforever
         self.songs['genre_count'] = self.songs['genre_ids'].apply(self._parse_splitted_category_to_number)
@@ -331,23 +312,23 @@ class FeatureProcesser(object):
 
         start = time.time()
         member_feature = ['city',
-                        'bd',
-                        'gender',
-                        'registered_via',
-                        'expiration_date',
-                        'membership_days',
-                        'registration_year',
-                        'registration_month',
-                        'registration_date',
-                        'expiration_year',
-                        'expiration_month']
+                          'bd',
+                          'gender',
+                          'registered_via',
+                          'expiration_date',
+                          'membership_days',
+                          'registration_year',
+                          'registration_month',
+                          'registration_date',
+                          'expiration_year',
+                          'expiration_month']
 
         song_feature = ['genre_ids',
-                     # 'artist_name',
-                     'language',
-                     # 'composer',
-                     # 'lyricist',
-                     'song_year']
+                        'artist_name',
+                        'language',
+                        'composer',
+                        'lyricist',
+                        'song_year']
 
         member_pipeline = Pipeline([
                 ('extract', ColumnSelector(member_feature)),
@@ -385,6 +366,9 @@ class FeatureProcesser(object):
         logging.debug("establish known list in %0.2fs" % (time.time() - start))
 
         # start = time.time()
+
+        # pool = mp.Pool(processes=6)
+
         # Parallel(n_jobs=6)(delayed(self._get_unknown_map)(i, members.msno, known_msno_list, True) for i in unknown_msno)
         # logging.debug("process msno in %0.2fs" % (time.time() - start))
         n = 0
@@ -570,7 +554,8 @@ class FeatureProcesser(object):
     def _find_genre(self, g_list, g):
         return True if g in g_list else False
 
-class ImplicitProcesser(object):
+
+class ImplicitProcessor(object):
 
     def __init__(self, feature_size=100, calculate_training_loss=False, save_dir='./model',
                  iterations=15, n_clusters=30, random_state=50, cluster=True):
@@ -635,7 +620,7 @@ class ImplicitProcesser(object):
 
         self.item_group = kmeans.fit_predict(self.item_factors)
         self.user_group = kmeans.fit_predict(self.user_factors)
-        logging.debug("add clusting feature in %0.2fs" % (time.time() - start))
+        logging.debug("add clustering feature in %0.2fs" % (time.time() - start))
 
     def _process_train(self):
 
