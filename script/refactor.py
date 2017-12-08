@@ -40,7 +40,7 @@ class DataProcessor(object):
         res = None
         message = None
         if command in ['train', 'test']:
-            res = TrainTestProcessor().parse(df)
+            res = TrainTestProcessor(ref_df).parse(df)
             message = command
         elif command == 'members':
             res = MembersProcessor().parse(df)
@@ -54,7 +54,7 @@ class DataProcessor(object):
         elif command == 'engineering':
             assert ref_df is not None, 'Please pass the reference dataframe'
             res = EngineeringProcessor(ref_df).parse(df)
-            message = ref_df
+            message = command
 
         assert res is not None, logging.error("command \"%s\" is valid." % command)
         logging.info("parse %s_df in %0.2fs" % (message, time.time() - start))
@@ -219,8 +219,23 @@ class SongExtraProcessor(DataProcessor):
 
 class TrainTestProcessor(DataProcessor):
 
-    def __init__(self):
+    def __init__(self, ref_df):
         super(TrainTestProcessor, self).__init__()
+        self._ref_df = ref_df
+
+        # fill missing data
+        self._ref_df['source_system_tab'].fillna('others', inplace=True)
+        self._ref_df['source_screen_name'].fillna('others', inplace=True)
+        self._ref_df['source_type'].fillna('nan', inplace=True)
+
+        # feature engineering
+        self._ref_df['source_merged'] = self._ref_df['source_system_tab'].map(str) + ' | ' + \
+                                        self._ref_df['source_screen_name'].map(str) + ' | ' + \
+                                        self._ref_df['source_type'].map(str)
+
+        self._ref_df = self._ref_df[['source_merged', 'target']].groupby('source_merged').agg(['mean', 'count'])
+        self._ref_df.reset_index(inplace=True)
+        self._ref_df.columns = ['source_merged', 'source_replay_pb', 'source_replay_count']
 
     def parse(self, df):
         # fill missing data
@@ -233,11 +248,7 @@ class TrainTestProcessor(DataProcessor):
                               df['source_screen_name'].map(str) + ' | ' +\
                               df['source_type'].map(str)
 
-        count_df = df[['source_merged', 'target']].groupby('source_merged').agg(['mean', 'count'])
-        count_df.reset_index(inplace=True)
-        count_df.columns = ['source_merged', 'source_replay_pb', 'source_replay_count']
-
-        df = df.merge(count_df, on='source_merged', how='left')
+        df = df.merge(self._ref_df, on='source_merged', how='left')
 
         df['1h_source'] = df['source_replay_pb'].apply(TrainTestProcessor.__one_hot_encode_source)
 
@@ -273,7 +284,7 @@ class EngineeringProcessor(DataProcessor):
 
     def __init__(self, ref_df):
         super(EngineeringProcessor, self).__init__()
-        self.ref_df = ref_df
+        self._ref_df = ref_df
 
     def parse(self, df):
         df = self.generate_play_count(df)
@@ -283,7 +294,7 @@ class EngineeringProcessor(DataProcessor):
         return df
 
     def generate_play_count(self, df):
-        count_df = self.ref_df['song_id'].value_counts().reset_index()
+        count_df = self._ref_df['song_id'].value_counts().reset_index()
         count_df.columns = ['song_id', 'play_count']
 
         df = df.merge(count_df, on='song_id', how='left')
@@ -292,12 +303,12 @@ class EngineeringProcessor(DataProcessor):
         return df
 
     def generate_track_count(self, df):
-        track_count_df = self.ref_df[['song_id', 'artist_name']].drop_duplicates('song_id')
+        track_count_df = self._ref_df[['song_id', 'artist_name']].drop_duplicates('song_id')
         track_count_df = track_count_df.groupby('artist_name').agg('count').reset_index()
         track_count_df.columns = ['artist_name', 'track_count']
         track_count_df = track_count_df.sort_values('track_count', ascending=False)
 
-        artist_count_df = df[['artist_name', 'target']].groupby('artist_name').agg(['mean', 'count']).reset_index()
+        artist_count_df = self._ref_df[['artist_name', 'target']].groupby('artist_name').agg(['mean', 'count']).reset_index()
         artist_count_df.columns = ['artist_name', 'replay_pb', 'play_count']
 
         artist_count_df = artist_count_df.merge(track_count_df, on='artist_name', how='left')
@@ -308,7 +319,7 @@ class EngineeringProcessor(DataProcessor):
         return df
 
     def generate_cover_lang(self, df):
-        cover_lang_df = self.ref_df[['artist_name', 'language']].drop_duplicates(['artist_name', 'language'])
+        cover_lang_df = self._ref_df[['artist_name', 'language']].drop_duplicates(['artist_name', 'language'])
         cover_lang_df = cover_lang_df['artist_name'].value_counts().reset_index()
         cover_lang_df.columns = ['artist_name', 'cover_lang']
 
@@ -318,7 +329,116 @@ class EngineeringProcessor(DataProcessor):
         return df
 
 
-class FeatureProcessor(object):
+class SimilarityProcessor(DataProcessor):
+    __MEMBERS_FEATURE = ['city', 'bd', 'gender', 'registered_via', 'expiration_date', 'membership_days',
+                         'registration_year', 'registration_month', 'registration_date',
+                         'expiration_year', 'expiration_month']
+
+    __SONGS_FEATURE = ['genre_ids', 'artist_name', 'language', 'composer', 'lyricist', 'song_year']
+
+    def __init__(self, songs_df, members_df):
+        super(SimilarityProcessor, self).__init__()
+        self._songs_df = songs_df
+        self._members_df = members_df
+
+    def parse(self, df):
+        train_df = df[0]
+        test_df = df[1]
+
+        return self.__compute_msno_song_similarity(train_df, test_df)
+
+    class ColumnSelector(BaseEstimator, TransformerMixin):
+
+        def __init__(self, columns):
+            self.columns = columns
+
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            return X[self.columns].to_dict(orient='record')
+
+    def __compute_msno_song_similarity(self, train, test):
+        for col in train.columns:
+            if train[col].dtype == object:
+                train[col] = train[col].astype('category')
+                test[col] = test[col].astype('category')
+        # pipeline
+        member_pipeline = Pipeline([
+                ('extract', SimilarityProcessor.ColumnSelector(SimilarityProcessor.__MEMBERS_FEATURE)),
+                ('dicVect', DictVectorizer())])
+        song_pipeline = Pipeline([
+                ('extract', SimilarityProcessor.ColumnSelector(SimilarityProcessor.__SONGS_FEATURE)),
+                ('dicVect', DictVectorizer())])
+
+        # ? songs = self.songs.merge(self.extra, on='song_id', how='left').fillna('test')
+        songs_df = self._songs_df
+        members_df = self._members_df.fillna('test')
+        msno_x = {v: i for i, v in enumerate(members_df.msno)}
+        song_x = {v: i for i, v in enumerate(songs_df.song_id)}
+
+        # transform members_df
+        start = time.time()
+        msno_m = member_pipeline.fit_transform(members_df)
+        logging.debug("transform members_df in %0.2fs" % (time.time() - start))
+
+        # transform songs_df
+        start = time.time()
+        song_m = song_pipeline.fit_transform(songs_df)
+        logging.debug("transform songs_df in %0.2fs" % (time.time() - start))
+
+        known_msno = set(train.msno.unique())
+        unknown_msno = list(set(test.msno.unique()) - known_msno)
+        total_msno = float(len(unknown_msno))
+
+        known_song = set(train.song_id.unique())
+        unknown_song = list(set(test.song_id.unique()) - known_song)
+        total_song = float(len(unknown_song))
+
+        unknown_msno_map, unknown_song_map = {}, {}
+
+        start = time.time()
+        known_msno_list = members_df.msno.apply(lambda x: x in known_msno)
+        known_song_list = songs_df.song_id.apply(lambda x: x in known_song)
+        logging.debug("establish known list in %0.2fs" % (time.time() - start))
+
+        # ? Parallel(n_jobs=6)(delayed(self._get_unknown_map)
+        #                    (i, members.msno, known_msno_list, True) for i in unknown_msno)
+
+        start = time.time()
+        n = 0
+        for i in unknown_msno:
+            if i in msno_x:
+                df = SimilarityProcessor.__get_rank(msno_m, msno_x[i], members_df.msno, known_msno_list)
+                unknown_msno_map[i] = df.iloc[0]['id']
+            else:
+                unknown_msno_map[i] = 'new'
+            n += 1
+            if (n + 1) % 100 == 0:
+                print('msno: %f %%' % ((n/total_msno) * 100))
+
+        n = 0
+        for i in unknown_song:
+            if i in song_x:
+                df = SimilarityProcessor.__get_rank(song_m, song_x[i], songs_df.song_id, known_song_list)
+                unknown_song_map[i] = df.iloc[0]['id']
+            else:
+                unknown_song_map[i] = 'new'
+            n += 1
+            if (n + 1) % 100 == 0:
+                print('song: %f %%' % ((n/total_song) * 100))
+
+        logging.debug("transform all unknown data in %0.2fs" % (time.time() - start))
+        return unknown_msno_map, unknown_song_map
+
+    @staticmethod
+    def __get_rank(model, w, id_list, known_list):
+        result = cosine_similarity(model, model[w].toarray().reshape(1, -1)).reshape(1, -1)[0]
+        r = pd.DataFrame({'id': id_list, 'similarity': result, 'known': known_list})
+        return r[r.known].sort_values(by='similarity', ascending=False).reset_index(drop=True)
+
+
+class FeatureProducer(object):
 
     __SONGS_FILE_NAME = 'songs.csv'
     __SONG_EXTRA_FILE_NAME = 'song_extra_info.csv'
@@ -326,10 +446,11 @@ class FeatureProcessor(object):
     __TRAIN_FILE_NAME = 'train.csv'
     __TEST_FILE_NAME = 'test.csv'
 
-    __INITIALIZATION_READY = 0
-    __LOAD_READY = 1
-    __PREPROCESS_READY = 2
-    __ENGINEERING_READY = 3
+    __INITIALIZATION_READY = (1 << 0)
+    __LOAD_READY = (1 << 1)
+    __PREPROCESS_READY = (1 << 2)
+    __ENGINEERING_READY = (1 << 3)
+    __SIMILARITY_MAPPING_READY = (1 << 4)
 
     def __init__(self, root='./data'):
         assert os.path.exists(root), '%s not exists!' % root
@@ -341,7 +462,9 @@ class FeatureProcessor(object):
         self._train_df = None
         self._test_df = None
         self._comb_df = None
-        self._state = FeatureProcessor.__INITIALIZATION_READY
+        self._unknown_msno_map = None
+        self._unknown_song_map = None
+        self._state = FeatureProducer.__INITIALIZATION_READY
 
     def load_raw(self):
         """
@@ -351,7 +474,7 @@ class FeatureProcessor(object):
         :return:
         """
 
-        assert self._state >= FeatureProcessor.__INITIALIZATION_READY, logging.error("Please reconstruct new class")
+        assert (self._state & FeatureProducer.__INITIALIZATION_READY) > 0, logging.error("Please reconstruct new class")
 
         start = time.time()
 
@@ -365,7 +488,7 @@ class FeatureProcessor(object):
         self._members_df = pd.read_csv(os.path.join(self._root, self.__MEMBERS_FILE_NAME),
                                        parse_dates=['registration_init_time', 'expiration_date'])
 
-        self._state = FeatureProcessor.__LOAD_READY
+        self._state |= FeatureProducer.__LOAD_READY
         logging.info("load raw data in %0.2fs" % (time.time() - start))
 
     def pre_process(self):
@@ -376,11 +499,11 @@ class FeatureProcessor(object):
         :return:
         """
 
-        assert self._state >= FeatureProcessor.__LOAD_READY, logging.error("Please load raw data first")
+        assert (self._state & FeatureProducer.__LOAD_READY) > 0, logging.error("Please load raw data first")
 
         # pre-process all data-frame
-        self._train_df = DataProcessor().process(self._train_df, 'train')
-        self._test_df = DataProcessor().process(self._train_df, 'test')
+        self._train_df = DataProcessor().process(self._train_df, 'train', self._train_df)
+        self._test_df = DataProcessor().process(self._test_df, 'test', self._train_df)
         self._members_df = DataProcessor().process(self._members_df, 'members')
         self._songs_df = DataProcessor().process(self._songs_df, "songs")
         self._song_extra_info_df = DataProcessor().process(self._song_extra_info_df, "song_extra_info")
@@ -396,7 +519,7 @@ class FeatureProcessor(object):
 
         self._comb_df = self._train_df.append(self._test_df)
 
-        self._state = FeatureProcessor.__PREPROCESS_READY
+        self._state |= FeatureProducer.__PREPROCESS_READY
 
     def feature_engineering(self):
         """
@@ -406,19 +529,35 @@ class FeatureProcessor(object):
         :return:
         """
 
-        assert self._state >= FeatureProcessor.__PREPROCESS_READY, logging.error("Please proprocess raw data first")
+        assert (self._state & FeatureProducer.__PREPROCESS_READY) > 0, logging.error("Please proprocess raw data first")
 
         self._train_df = DataProcessor().process(self._train_df, 'engineering', self._train_df)
         self._test_df = DataProcessor().process(self._test_df, 'engineering', self._comb_df)
 
-        self._state = FeatureProcessor.__ENGINEERING_READY
+        self._state |= FeatureProducer.__ENGINEERING_READY
+
+    def compute_msno_song_similarity(self):
+        """
+        I don't really know about how this do...
+        Call this function after calling "load_raw"
+
+        :return:
+        """
+
+        assert (self._state & FeatureProducer.__LOAD_READY) > 0, logging.error("Please load raw data first")
+
+        self._unknown_msno_map, self._unknown_song_map = \
+            SimilarityProcessor(self._songs_df, self._members_df).parse([self._train_df, self._test_df])
+
+        self._state |= FeatureProducer.__SIMILARITY_MAPPING_READY
 
 
 def main():
-    fp = FeatureProcessor(root='../data')
+    fp = FeatureProducer(root='../data')
     fp.load_raw()
     fp.pre_process()
     fp.feature_engineering()
+    fp.compute_msno_song_similarity()
 
 
 if __name__ == '__main__':

@@ -337,7 +337,7 @@ class FeatureProcessor(object):
                 ('extract', ColumnSelector(song_feature)),
                 ('dicVect', DictVectorizer())])
 
-        songs = self.songs.merge(self.extra, on = 'song_id', how = 'left').fillna('test')
+        songs = self.songs.merge(self.extra, on='song_id', how='left').fillna('test')
         members = self.members.fillna('test')
         self.msno_x = {v: i for i, v in enumerate(members.msno)}
         self.song_x = {v: i for i, v in enumerate(songs.song_id)}
@@ -345,11 +345,9 @@ class FeatureProcessor(object):
         self.msno_m = member_pipeline.fit_transform(members)
         logging.debug("transform members in %0.2fs" % (time.time() - start))
 
-        start = time.time()
         self.song_m = song_pipeline.fit_transform(songs)
         logging.debug("transform songs in %0.2fs" % (time.time() - start))
 
-        start = time.time()
         known_msno = set(train.msno.unique())
         known_song = set(train.song_id.unique())
 
@@ -365,38 +363,28 @@ class FeatureProcessor(object):
         known_song_list = songs.song_id.apply(lambda x: x in known_song)
         logging.debug("establish known list in %0.2fs" % (time.time() - start))
 
-        # start = time.time()
-
-        # pool = mp.Pool(processes=6)
-
         # Parallel(n_jobs=6)(delayed(self._get_unknown_map)(i, members.msno, known_msno_list, True) for i in unknown_msno)
-        # logging.debug("process msno in %0.2fs" % (time.time() - start))
         n = 0
         for i in unknown_msno:
             if i in self.msno_x:
                 df = self._get_rank(self.msno_m, self.msno_x[i], members.msno, known_msno_list)
                 self.unknown_msno_map[i] = df.iloc[0]['id']
-            # else:
-            #     self.unknown_msno_map[i] = 'new'
+            else:
+                self.unknown_msno_map[i] = 'new'
             n += 1
-            if (n + 1) % 100 == 0: print('msno: %f %%' % ((n/total_msno) * 100))
+            if (n + 1) % 100 == 0:
+                print('msno: %f %%' % ((n/total_msno) * 100))
 
-        # for i in unknown_song:
-            # self.unknown_song_map[i] = 'new'
-        # start = time.time()
-        # r = Parallel(n_jobs=-1, verbose=100)(delayed(self._get_unknown_map)(i) for i in unknown_song)
-        # logging.debug("difficult part in %0.2fs" % (time.time() - start))
-        # for k, v in zip(unknown_song, r):
-        #     self.unknown_song_map[k] = v
-        # n = 0
-        # for i in unknown_song:
-        #     if i in self.song_x:
-        #         df = self._get_rank(self.song_m, self.song_x[i], songs.song_id, known_song_list)
-        #         self.unknown_song_map[i] = df.iloc[0]['id']
-        # #     else:
-        # #         unknown_song_map[i] = 'new'
-        #     n += 1
-        #     if (n + 1) % 100 == 0: print('song: %f %%' % ((n/total_song) * 100))
+        n = 0
+        for i in unknown_song:
+            if i in self.song_x:
+                df = self._get_rank(self.song_m, self.song_x[i], songs.song_id, known_song_list)
+                self.unknown_song_map[i] = df.iloc[0]['id']
+            else:
+                self.unknown_song_map[i] = 'new'
+            n += 1
+            if (n + 1) % 100 == 0:
+                print('song: %f %%' % ((n/total_song) * 100))
 
         logging.debug("transform all unknown data in %0.2fs" % (time.time() - start))
 
