@@ -551,6 +551,30 @@ class FeatureProducer(object):
 
         self._state |= FeatureProducer.__SIMILARITY_MAPPING_READY
 
+    @property
+    def train_df(self):
+        return self._train_df
+
+    @property
+    def test_df(self):
+        return self._test_df
+
+    @property
+    def members_df(self):
+        return self._members_df
+
+    @property
+    def songs_df(self):
+        return self._songs_df
+
+    @property
+    def song_extra_info_df(self):
+        return self._song_extra_info_df
+
+    @property
+    def comb_df(self):
+        return self._comb_df
+
 
 def main():
     fp = FeatureProducer(root='../data')
