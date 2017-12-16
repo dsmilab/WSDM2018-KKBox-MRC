@@ -20,10 +20,6 @@ from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.metrics.pairwise import cosine_similarity
 
-LOG_FORMAT = '%(asctime)s %(levelname)s << %(message)s'
-logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT, datefmt='%H:%M:%S')
-
-
 class DataProcessor(object):
 
     def __init__(self):
@@ -75,32 +71,33 @@ class SongsProcessor(DataProcessor):
         df['lyricist'].fillna('nan', inplace=True)
         df['genre_ids'].fillna('nan', inplace=True)
 
+        df['language'] = df['language'].astype('str')
         # feature engineering
-        df['is_featured'] = df['artist_name'].apply(SongsProcessor.__is_featured).astype(np.int8)
+        # df['is_featured'] = df['artist_name'].apply(SongsProcessor.__is_featured).astype(np.int8)
 
         # >> duplicate
-        df['artist_count'] = df['artist_name'].apply(SongsProcessor.__artist_count).astype(np.int8)
+        # df['artist_count'] = df['artist_name'].apply(SongsProcessor.__artist_count).astype(np.int8)
 
-        df['artist_composer'] = (df['artist_name'] == df['composer'])
-        df['artist_composer'] = df['artist_composer'].astype(np.int8)
+        # df['artist_composer'] = (df['artist_name'] == df['composer'])
+        # df['artist_composer'] = df['artist_composer'].astype(np.int8)
 
         # if artist, lyricist and composer are all three same
-        df['artist_composer_lyricist'] = ((df['artist_name'] == df['composer']) &
-                                          (df['artist_name'] == df['lyricist']) &
-                                          (df['composer'] == df['lyricist']))
-        df['artist_composer_lyricist'] = df['artist_composer_lyricist'].astype(np.int8)
+        # df['artist_composer_lyricist'] = ((df['artist_name'] == df['composer']) &
+                                          # (df['artist_name'] == df['lyricist']) &
+                                          # (df['composer'] == df['lyricist']))
+        # df['artist_composer_lyricist'] = df['artist_composer_lyricist'].astype(np.int8)
 
         # >> duplicate
-        df['song_lang_boolean'] = df['language'].apply(SongsProcessor.__song_lang_boolean).astype(np.int8)
+        # df['song_lang_boolean'] = df['language'].apply(SongsProcessor.__song_lang_boolean).astype(np.int8)
 
         # howeverforever
-        df['genre_count'] = df['genre_ids'].apply(SongsProcessor.__parse_splitted_category_to_number)
-        df['composer_count'] = df['composer'].apply(SongsProcessor.__parse_splitted_category_to_number)
-        df['lyricist_count'] = df['lyricist'].apply(SongsProcessor.__parse_splitted_category_to_number)
+        # df['genre_count'] = df['genre_ids'].apply(SongsProcessor.__parse_splitted_category_to_number)
+        # df['composer_count'] = df['composer'].apply(SongsProcessor.__parse_splitted_category_to_number)
+        # df['lyricist_count'] = df['lyricist'].apply(SongsProcessor.__parse_splitted_category_to_number)
 
-        df['1h_lang'] = df['language'].apply(SongsProcessor.__one_hot_encode_lang)
+        # df['1h_lang'] = df['language'].apply(SongsProcessor.__one_hot_encode_lang)
 
-        df['1h_song_length'] = df['song_length'].apply(lambda x: 1 if x <= 239738 else 0)
+        # df['1h_song_length'] = df['song_length'].apply(lambda x: 1 if x <= 239738 else 0)
 
         assert(~df.isnull().any().any()), 'There exists missing data!'
 
@@ -147,20 +144,21 @@ class MembersProcessor(DataProcessor):
         df['gender'].fillna('nan', inplace=True)
 
         # feature engineering
-        df['membership_days'] = df['expiration_date'].subtract(df['registration_init_time']).dt.days.astype(int)
+        # df['membership_days'] = df['expiration_date'].subtract(df['registration_init_time']).dt.days.astype(int)
 
-        df['registration_year'] = df['registration_init_time'].dt.year
-        df['registration_month'] = df['registration_init_time'].dt.month
+        # df['registration_year'] = df['registration_init_time'].dt.year
+        # df['registration_month'] = df['registration_init_time'].dt.month
 
-        df['expiration_year'] = df['expiration_date'].dt.year
-        df['expiration_month'] = df['expiration_date'].dt.month
+        # df['expiration_year'] = df['expiration_date'].dt.year
+        # df['expiration_month'] = df['expiration_date'].dt.month
 
         # useless feature
         df.drop(['registration_init_time'], axis=1, inplace=True)
 
         # howeverforever
-        df['bd'] = df['bd'].apply(MembersProcessor.__transform_bd_outliers)
-        df['1h_via'] = df['registered_via'].apply(MembersProcessor.__one_hot_encode_via)
+        df['bd'] = df['bd'].apply(MembersProcessor.__transform_bd_outliers).astype('str')
+        df['registered_via'] = df['registered_via'].astype('str')
+        # df['1h_via'] = df['registered_via'].apply(MembersProcessor.__one_hot_encode_via)
 
         assert (~df.isnull().any().any()), 'There exists missing data!'
 
@@ -186,18 +184,19 @@ class SongExtraProcessor(DataProcessor):
         super(SongExtraProcessor, self).__init__()
 
     def parse(self, df):
-        df['song_year'] = df['isrc'].apply(SongExtraProcessor.__transform_isrc_to_year)
+        df['song_year'] = df['isrc'].apply(SongExtraProcessor.__transform_isrc_to_year).astype('str')
         df.drop(['name', 'isrc'], axis=1, inplace=True)
+
 
         # howeverforever
         # df['song_country'] = df['isrc'].apply(self._transform_isrc_to_country)
         # df['song_registration'] = df['isrc'].apply(self._transform_isrc_to_reg)
         # df['song_designation'] = df['isrc'].apply(self._transform_isrc_to_desig)
 
-        df['1h_song_year'] = df['song_year'].apply(SongExtraProcessor.__one_hot_encode_year)
+        # df['1h_song_year'] = df['song_year'].apply(SongExtraProcessor.__one_hot_encode_year)
         # df['1h_song_country'] = df['song_country'].apply(self._one_hot_encode_country)
 
-        df['song_year'].fillna(2017, inplace=True)
+        df['song_year'].fillna('2017', inplace=True)
         # df['song_registration'].fillna('***', inplace=True)
 
         assert (~df.isnull().any().any())
@@ -229,13 +228,13 @@ class TrainTestProcessor(DataProcessor):
         self._ref_df['source_type'].fillna('nan', inplace=True)
 
         # feature engineering
-        self._ref_df['source_merged'] = self._ref_df['source_system_tab'].map(str) + ' | ' + \
-                                        self._ref_df['source_screen_name'].map(str) + ' | ' + \
-                                        self._ref_df['source_type'].map(str)
-
-        self._ref_df = self._ref_df[['source_merged', 'target']].groupby('source_merged').agg(['mean', 'count'])
-        self._ref_df.reset_index(inplace=True)
-        self._ref_df.columns = ['source_merged', 'source_replay_pb', 'source_replay_count']
+        # self._ref_df['source_merged'] = self._ref_df['source_system_tab'].map(str) + ' | ' + \
+        #                                 self._ref_df['source_screen_name'].map(str) + ' | ' + \
+        #                                 self._ref_df['source_type'].map(str)
+        #
+        # self._ref_df = self._ref_df[['source_merged', 'target']].groupby('source_merged').agg(['mean', 'count'])
+        # self._ref_df.reset_index(inplace=True)
+        # self._ref_df.columns = ['source_merged', 'source_replay_pb', 'source_replay_count']
 
     def parse(self, df):
         # fill missing data
@@ -244,20 +243,20 @@ class TrainTestProcessor(DataProcessor):
         df['source_type'].fillna('nan', inplace=True)
 
         # feature engineering
-        df['source_merged'] = df['source_system_tab'].map(str) + ' | ' +\
-                              df['source_screen_name'].map(str) + ' | ' +\
-                              df['source_type'].map(str)
+        # df['source_merged'] = df['source_system_tab'].map(str) + ' | ' +\
+        #                       df['source_screen_name'].map(str) + ' | ' +\
+        #                       df['source_type'].map(str)
+        #
+        # df = df.merge(self._ref_df, on='source_merged', how='left')
 
-        df = df.merge(self._ref_df, on='source_merged', how='left')
-
-        df['1h_source'] = df['source_replay_pb'].apply(TrainTestProcessor.__one_hot_encode_source)
-
-        df['1h_system_tab'] = df['source_system_tab'].apply(TrainTestProcessor.__one_hot_encode_system_tab)
-        df['1h_screen_name'] = df['source_screen_name'].apply(TrainTestProcessor.__one_hot_encode_screen_name)
-        df['1h_source_type'] = df['source_type'].apply(TrainTestProcessor.__one_hot_encode_source_type)
+        # df['1h_source'] = df['source_replay_pb'].apply(TrainTestProcessor.__one_hot_encode_source)
+        #
+        # df['1h_system_tab'] = df['source_system_tab'].apply(TrainTestProcessor.__one_hot_encode_system_tab)
+        # df['1h_screen_name'] = df['source_screen_name'].apply(TrainTestProcessor.__one_hot_encode_screen_name)
+        # df['1h_source_type'] = df['source_type'].apply(TrainTestProcessor.__one_hot_encode_source_type)
 
         # useless feature
-        df.drop(['source_merged', 'source_replay_pb', 'source_replay_count'], axis=1, inplace=True)
+        # df.drop(['source_merged', 'source_replay_pb', 'source_replay_count'], axis=1, inplace=True)
 
         assert (~df.isnull().any().any()), 'There exists missing data!'
 
@@ -574,15 +573,3 @@ class FeatureProducer(object):
     @property
     def comb_df(self):
         return self._comb_df
-
-
-def main():
-    fp = FeatureProducer(root='../data')
-    fp.load_raw()
-    fp.pre_process()
-    fp.feature_engineering()
-    fp.compute_msno_song_similarity()
-
-
-if __name__ == '__main__':
-    main()
