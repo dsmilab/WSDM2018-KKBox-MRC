@@ -25,7 +25,7 @@ class DataProcessor(object):
         raise NotImplementedError("Please implement method \'parse()\'.")
 
     @staticmethod
-    def process(df, command, ref_df=None):
+    def process(df, command, ref_df=None, start_index=0):
         start = time.time()
 
         res = None
@@ -45,6 +45,9 @@ class DataProcessor(object):
         elif command == 'engineering':
             assert ref_df is not None, 'Please pass the reference dataframe'
             res = EngineeringProcessor(ref_df).parse(df)
+            message = command
+        elif command == 'timestamp':
+            res = TimeStampProcessor().parse(df)
             message = command
 
         assert res is not None, logging.error("command \"%s\" is valid." % command)
@@ -309,6 +312,25 @@ class EngineeringProcessor(DataProcessor):
         return df
 
 
+class TimeStampProcessor(DataProcessor):
+    """
+    This is order-sensitive.
+    """
+    __TIMESTAMP_COLUMN_NAME = 'timestamp'
+
+    def __init__(self):
+        super(TimeStampProcessor, self).__init__()
+        self._now_index = 0
+
+    def parse(self, df):
+        timestamp_df = pd.DataFrame(data=np.arange(self._now_index, self._now_index + df.shape[0]),
+                                    columns=[TimeStampProcessor.__TIMESTAMP_COLUMN_NAME])
+        self._now_index += df.shape[0]
+        df = df.join(timestamp_df)
+
+        return df
+
+
 class SimilarityProcessor(DataProcessor):
     __MEMBERS_FEATURE = ['city', 'bd', 'gender', 'registered_via', 'expiration_date', 'membership_days',
                          'registration_init_year', 'registration_init_month', 'registration_init_time',
@@ -551,6 +573,10 @@ class FeatureProducer(object):
 
         self._train_df = DataProcessor().process(self._train_df, 'engineering', self._train_df)
         self._test_df = DataProcessor().process(self._test_df, 'engineering', self._comb_df)
+
+        tsp = TimeStampProcessor()
+        self._train_df = tsp.parse(self._train_df)
+        self._test_df = tsp.parse(self._test_df)
 
         self._state |= FeatureProducer.__ENGINEERING_READY
 
