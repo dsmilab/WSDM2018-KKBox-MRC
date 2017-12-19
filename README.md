@@ -2,5 +2,15 @@
 
 ### Single LGBM with several features.
 
-So far, LB = 0.677. Hope before this weekend, LB >= 0.685.
-It should resolve [#2](https://github.com/dsmilab/WSDM2018-KKBox-MRC/issues/2) ASAP.
+:::success
+LB score: 0.686
+:::
+
+:arrow_down: 
+
+- [ ] Resolve [#3](https://github.com/dsmilab/WSDM2018-KKBox-MRC/issues/3)
+- [ ] Resolve [#4](https://github.com/dsmilab/WSDM2018-KKBox-MRC/issues/4)
+
+:::warning
+LB score: 0.7
+:::
